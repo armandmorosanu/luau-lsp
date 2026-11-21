@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - `luau-lsp analyze` can check modules on several threads: set the `LUAU_LSP_JOBS` environment variable to the number of threads (not used with `--annotate`)
+- Added a `LSP_MIMALLOC` CMake option (with `MIMALLOC_DIR` pointing at a mimalloc source checkout) to link mimalloc into the CLI as the global allocator
 
 ### Fixed
 
