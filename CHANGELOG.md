@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `luau-lsp analyze` can check modules on several threads: set the `LUAU_LSP_JOBS` environment variable to the number of threads (not used with `--annotate`)
+
 ### Fixed
 
 - `luau-lsp analyze` now reports each module's type errors once. A file that was already checked as a dependency of an earlier analyzed file printed its own type errors again, along with those of every module it requires
