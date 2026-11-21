@@ -7,7 +7,7 @@ option(LSP_STATIC_CRT "Link with the static CRT (/MT)" OFF)
 option(LSP_BUILD_WITH_SENTRY "Build with Sentry (crash reporting)" OFF)
 option(LSP_WERROR "Warnings as errors" ON)
 
-set(LSP_VERSION "1.70.1")
+set(LSP_VERSION "1.70.1-nt.1")
 set(LSP_NAME "Luau")
 
 if (LSP_STATIC_CRT)
@@ -212,15 +212,24 @@ target_include_directories(Luau.LanguageServer.CLI PRIVATE src/include)
 target_include_directories(Luau.LanguageServer.CLI SYSTEM PRIVATE ${EXTERN_INCLUDES})
 target_link_libraries(Luau.LanguageServer.CLI PRIVATE Luau.LanguageServer Luau.Analysis)
 
-# Optional: mimalloc replaces global new/delete in the CLI. MIMALLOC_DIR is a mimalloc source checkout.
+# Optional: mimalloc replaces global new/delete in the CLI. MIMALLOC_DIR may point at a mimalloc source checkout; otherwise mimalloc v3.6.1 is fetched.
 option(LSP_MIMALLOC "Link mimalloc into the CLI" OFF)
 if (LSP_MIMALLOC)
     set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
     set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(MI_OVERRIDE OFF CACHE BOOL "" FORCE)
-    file(TO_CMAKE_PATH "${MIMALLOC_DIR}" MIMALLOC_DIR)
-    add_subdirectory(${MIMALLOC_DIR} mimalloc EXCLUDE_FROM_ALL)
+    if (MIMALLOC_DIR)
+        file(TO_CMAKE_PATH "${MIMALLOC_DIR}" MIMALLOC_DIR)
+        add_subdirectory(${MIMALLOC_DIR} mimalloc EXCLUDE_FROM_ALL)
+    else()
+        include(FetchContent)
+        # v3.6.1
+        FetchContent_Declare(mimalloc
+            GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+            GIT_TAG 56dc5eb80145f9a3ba7ca23d47c6a248b9d8586c)
+        FetchContent_MakeAvailable(mimalloc)
+    endif()
     target_sources(Luau.LanguageServer.CLI PRIVATE src/MimallocNewDelete.cpp)
     target_link_libraries(Luau.LanguageServer.CLI PRIVATE mimalloc-static)
 endif()
