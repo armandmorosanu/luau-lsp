@@ -408,15 +408,22 @@ int startAnalyze(const argparse::ArgumentParser& program)
         for (const auto& path : files)
             workspace.frontend.queueModuleCheck(workspace.fileResolver.getModuleName(Uri::file(path)));
         Luau::FrontendOptions options{/* retainFullTypeGraphs: */ false, /* forAutocomplete: */ false, /* runLintChecks: */ true};
-        TaskScheduler scheduler(jobs);
-        workspace.frontend.checkQueuedModules(
-            options,
-            [&](std::vector<std::function<void()>> tasks)
-            {
-                for (auto& task : tasks)
-                    scheduler.push(std::move(task));
-            }
-        );
+        TaskScheduler scheduler(std::min(jobs, std::max(1u, std::thread::hardware_concurrency())));
+        try
+        {
+            workspace.frontend.checkQueuedModules(
+                options,
+                [&](std::vector<std::function<void()>> tasks)
+                {
+                    for (auto& task : tasks)
+                        scheduler.push(std::move(task));
+                }
+            );
+        }
+        catch (Luau::InternalCompilerError&)
+        {
+            // the per-file loop below re-checks what is left, reporting the error as serial mode does
+        }
     }
 
     for (const auto& path : files)

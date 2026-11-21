@@ -1,3 +1,4 @@
+#include "Luau/TypeInfer.h"
 #include "Luau/TypeFwd.h"
 #include "Platform/RobloxPlatform.hpp"
 
@@ -80,7 +81,8 @@ std::optional<Luau::WithPredicate<Luau::TypePackId>> MagicChildLookup::handleOld
     auto childName = std::string(str->value.data, str->value.size);
     auto child = recursive ? node->findDescendant(childName) : node->findChild(childName);
     if (child)
-        return Luau::WithPredicate<Luau::TypePackId>{arena.addTypePack({getSourcemapType(globals, arena, *child)})};
+        return Luau::WithPredicate<Luau::TypePackId>{
+            typeChecker.currentModule->internalTypes->addTypePack({getSourcemapType(globals, arena, *child)})};
 
     return std::nullopt;
 }
@@ -217,7 +219,8 @@ std::optional<Luau::WithPredicate<Luau::TypePackId>> MagicFindFirstAncestor::han
     // This is a O(n) search, not great!
     if (auto ancestor = node->findAncestor(std::string(str->value.data, str->value.size)))
     {
-        return Luau::WithPredicate<Luau::TypePackId>{arena.addTypePack({getSourcemapType(globals, arena, *ancestor)})};
+        return Luau::WithPredicate<Luau::TypePackId>{
+            typeChecker.currentModule->internalTypes->addTypePack({getSourcemapType(globals, arena, *ancestor)})};
     }
 
     return std::nullopt;
