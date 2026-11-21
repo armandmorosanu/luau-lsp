@@ -10,6 +10,7 @@ env:
 
 jobs:
   create-release:
+    if: github.repository == 'JohnnyMorganz/luau-lsp'
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
@@ -39,6 +40,7 @@ jobs:
           draft: true
 
   build-plugin:
+    if: github.repository == 'JohnnyMorganz/luau-lsp'
     needs: ["create-release"]
     name: Build Roblox Studio Plugin
     runs-on: ubuntu-latest
@@ -74,6 +76,7 @@ jobs:
           lune run cloud/execute_task.luau plugin_place.rbxl cloud/publishing_task.luau
 
   dist:
+    if: github.repository == 'JohnnyMorganz/luau-lsp'
     needs: ["create-release"]
     strategy:
       fail-fast: false
