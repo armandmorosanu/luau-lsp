@@ -165,25 +165,204 @@ void SourceNode::clearCachedTypes() const
         child->clearCachedTypes();
 }
 
-SourceNode* SourceNode::fromJson(const json& j, Luau::TypedAllocator<SourceNode>& allocator)
+namespace
 {
-    auto name = j.at("name").get<std::string>();
-    auto className = j.at("className").get<std::string>();
-
-    std::vector<std::string> filePaths;
-    if (j.contains("filePaths"))
-        j.at("filePaths").get_to(filePaths);
-
-    std::vector<SourceNode*> children;
-    if (j.contains("children"))
+// SAX events straight into SourceNodes: a place sourcemap has hundreds of thousands of nodes, and
+// building the json DOM first was most of the startup cost. Nodes are allocated in post-order, as
+// the recursive DOM walk did. Unknown keys are skipped.
+struct SourceNodeSax
+{
+    using Json = json;
+    struct Frame
     {
-        for (auto& child : j.at("children"))
-            children.emplace_back(SourceNode::fromJson(child, allocator));
+        std::string name, className;
+        bool hasName = false, hasClassName = false, pluginManaged = false;
+        std::vector<std::string> filePaths;
+        std::vector<SourceNode*> children;
+    };
+    enum class In
+    {
+        Node,
+        Children,
+        FilePaths,
+        Skip,
+    };
+
+    Luau::TypedAllocator<SourceNode>& allocator;
+    std::vector<Frame> frames;
+    std::vector<In> in;
+    std::string currentKey;
+    SourceNode* root = nullptr;
+
+    [[noreturn]] static void fail(const std::string& what)
+    {
+        throw std::runtime_error("sourcemap: " + what);
     }
 
-    bool pluginManaged = j.contains("pluginManaged") && j.at("pluginManaged").get<bool>();
+    // a scalar inside a node object; `kind` names the value for errors
+    void scalar(const char* kind)
+    {
+        if (in.empty())
+            fail("root is not an object");
+        switch (in.back())
+        {
+        case In::Skip:
+            return;
+        case In::Children:
+            fail(std::string("child is ") + kind + ", not an object");
+        case In::FilePaths:
+            fail(std::string("file path is ") + kind + ", not a string");
+        case In::Node:
+            if (currentKey == "name" || currentKey == "className" || currentKey == "filePaths" || currentKey == "children" || currentKey == "pluginManaged")
+                fail("'" + currentKey + "' is " + kind);
+            return;
+        }
+    }
 
-    return allocator.allocate(SourceNode(std::move(name), std::move(className), std::move(filePaths), std::move(children), pluginManaged));
+    bool null()
+    {
+        scalar("null");
+        return true;
+    }
+    bool boolean(bool b)
+    {
+        if (!in.empty() && in.back() == In::Node && currentKey == "pluginManaged")
+        {
+            frames.back().pluginManaged = b;
+            return true;
+        }
+        scalar("a boolean");
+        return true;
+    }
+    bool number_integer(Json::number_integer_t)
+    {
+        scalar("a number");
+        return true;
+    }
+    bool number_unsigned(Json::number_unsigned_t)
+    {
+        scalar("a number");
+        return true;
+    }
+    bool number_float(Json::number_float_t, const Json::string_t&)
+    {
+        scalar("a number");
+        return true;
+    }
+    bool binary(Json::binary_t&)
+    {
+        scalar("binary");
+        return true;
+    }
+    bool string(Json::string_t& s)
+    {
+        if (!in.empty() && in.back() == In::FilePaths)
+        {
+            frames.back().filePaths.emplace_back(std::move(s));
+            return true;
+        }
+        if (!in.empty() && in.back() == In::Node)
+        {
+            Frame& f = frames.back();
+            if (currentKey == "name")
+            {
+                f.name = std::move(s);
+                f.hasName = true;
+                return true;
+            }
+            if (currentKey == "className")
+            {
+                f.className = std::move(s);
+                f.hasClassName = true;
+                return true;
+            }
+        }
+        scalar("a string");
+        return true;
+    }
+    bool key(Json::string_t& k)
+    {
+        if (in.back() == In::Node)
+            currentKey = std::move(k);
+        return true;
+    }
+    bool start_object(std::size_t)
+    {
+        if (in.empty() || in.back() == In::Children)
+        {
+            if (in.empty() && root)
+                fail("more than one root");
+            frames.emplace_back();
+            in.push_back(In::Node);
+            return true;
+        }
+        if (in.back() == In::Node && (currentKey == "children" || currentKey == "filePaths"))
+            fail("'" + currentKey + "' is an object");
+        if (in.back() == In::Node && (currentKey == "name" || currentKey == "className" || currentKey == "pluginManaged"))
+            fail("'" + currentKey + "' is an object");
+        if (in.back() == In::FilePaths)
+            fail("file path is an object, not a string");
+        in.push_back(In::Skip);
+        return true;
+    }
+    bool end_object()
+    {
+        In top = in.back();
+        in.pop_back();
+        if (top == In::Skip)
+            return true;
+        Frame f = std::move(frames.back());
+        frames.pop_back();
+        if (!f.hasName)
+            fail("node without 'name'");
+        if (!f.hasClassName)
+            fail("node without 'className'");
+        SourceNode* node = allocator.allocate(
+            SourceNode(std::move(f.name), std::move(f.className), std::move(f.filePaths), std::move(f.children), f.pluginManaged)
+        );
+        if (frames.empty())
+            root = node;
+        else
+            frames.back().children.push_back(node);
+        return true;
+    }
+    bool start_array(std::size_t)
+    {
+        if (in.empty())
+            fail("root is not an object");
+        if (in.back() == In::Node && currentKey == "children")
+            in.push_back(In::Children);
+        else if (in.back() == In::Node && currentKey == "filePaths")
+            in.push_back(In::FilePaths);
+        else if (in.back() == In::Node && (currentKey == "name" || currentKey == "className" || currentKey == "pluginManaged"))
+            fail("'" + currentKey + "' is an array");
+        else if (in.back() == In::Children)
+            fail("child is an array, not an object");
+        else if (in.back() == In::FilePaths)
+            fail("file path is an array, not a string");
+        else
+            in.push_back(In::Skip);
+        return true;
+    }
+    bool end_array()
+    {
+        in.pop_back();
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception& e)
+    {
+        fail(e.what());
+    }
+};
+} // namespace
+
+SourceNode* SourceNode::fromJson(const std::string& contents, Luau::TypedAllocator<SourceNode>& allocator)
+{
+    SourceNodeSax sax{allocator};
+    json::sax_parse(contents, &sax);
+    if (!sax.root)
+        throw std::runtime_error("sourcemap: root is not an object");
+    return sax.root;
 }
 
 // Only includes nodes with filepaths to avoid writing every Instance in the DataModel to `sourcemap.json`
