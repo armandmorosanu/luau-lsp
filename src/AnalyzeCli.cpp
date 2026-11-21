@@ -10,7 +10,14 @@
 #include "Luau/PrettyPrinter.h"
 #include "LuauFileUtils.hpp"
 #include "LSP/LuauExt.hpp"
+#include <algorithm>
+#include <condition_variable>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <mutex>
+#include <queue>
+#include <thread>
 #include <memory>
 #include <unordered_set>
 #include <vector>
@@ -78,6 +85,44 @@ static void reportWarning(ReportFormat format, const char* name, const Luau::Lin
 {
     report(format, name, warning.location, Luau::LintWarning::getName(warning.code), warning.text.c_str());
 }
+
+struct TaskScheduler
+{
+    explicit TaskScheduler(unsigned threadCount)
+        : threadCount(threadCount)
+    {
+        for (unsigned i = 0; i < threadCount; i++)
+            workers.emplace_back([this] { while (std::function<void()> task = pop()) task(); });
+    }
+    ~TaskScheduler()
+    {
+        for (unsigned i = 0; i < threadCount; i++)
+            push({});
+        for (std::thread& worker : workers)
+            worker.join();
+    }
+    std::function<void()> pop()
+    {
+        std::unique_lock guard(mtx);
+        cv.wait(guard, [this] { return !tasks.empty(); });
+        std::function<void()> task = tasks.front();
+        tasks.pop();
+        return task;
+    }
+    void push(std::function<void()> task)
+    {
+        {
+            std::unique_lock guard(mtx);
+            tasks.push(std::move(task));
+        }
+        cv.notify_one();
+    }
+    unsigned threadCount;
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::vector<std::thread> workers;
+    std::queue<std::function<void()>> tasks;
+};
 
 bool analyzeFile(
     WorkspaceFolder& workspace, const std::string& path, ReportFormat format, bool annotate, std::unordered_set<std::string>& reportedModules)
@@ -356,6 +401,23 @@ int startAnalyze(const argparse::ArgumentParser& program)
 
     int failed = 0;
     std::unordered_set<std::string> reportedModules;
+    const char* jobsEnv = std::getenv("LUAU_LSP_JOBS");
+    unsigned jobs = jobsEnv ? unsigned(std::strtoul(jobsEnv, nullptr, 10)) : 0;
+    if (!annotate && jobs > 1)
+    {
+        for (const auto& path : files)
+            workspace.frontend.queueModuleCheck(workspace.fileResolver.getModuleName(Uri::file(path)));
+        Luau::FrontendOptions options{/* retainFullTypeGraphs: */ false, /* forAutocomplete: */ false, /* runLintChecks: */ true};
+        TaskScheduler scheduler(jobs);
+        workspace.frontend.checkQueuedModules(
+            options,
+            [&](std::vector<std::function<void()>> tasks)
+            {
+                for (auto& task : tasks)
+                    scheduler.push(std::move(task));
+            }
+        );
+    }
 
     for (const auto& path : files)
         failed += !analyzeFile(workspace, path, format, annotate, reportedModules);
