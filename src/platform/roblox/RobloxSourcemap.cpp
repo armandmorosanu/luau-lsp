@@ -549,8 +549,7 @@ void RobloxPlatform::updateSourceNodeMap(const std::string& sourceMapContents)
 
     try
     {
-        auto j = json::parse(sourceMapContents);
-        rootSourceNode = SourceNode::fromJson(j, sourceNodeAllocator);
+        rootSourceNode = SourceNode::fromJson(sourceMapContents, sourceNodeAllocator);
     }
     catch (const std::exception& e)
     {

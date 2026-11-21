@@ -79,7 +79,8 @@ struct SourceNode
     bool containsFilePaths() const;
     ordered_json toJson() const;
 
-    static SourceNode* fromJson(const json& j, Luau::TypedAllocator<SourceNode>& allocator);
+    /// Parses sourcemap JSON text; throws std::exception on malformed input
+    static SourceNode* fromJson(const std::string& contents, Luau::TypedAllocator<SourceNode>& allocator);
 };
 
 struct PluginNode
