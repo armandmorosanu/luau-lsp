@@ -7,6 +7,7 @@
 #include "LSP/Workspace.hpp"
 #include "LSP/ClientConfiguration.hpp"
 #include "Luau/TypeAttach.h"
+#include "Luau/SolverStats.h"
 #include "Luau/PrettyPrinter.h"
 #include "LuauFileUtils.hpp"
 #include "LSP/LuauExt.hpp"
@@ -401,6 +402,14 @@ int startAnalyze(const argparse::ArgumentParser& program)
 
     int failed = 0;
     std::unordered_set<std::string> reportedModules;
+    const bool phaseLog = std::getenv("LUAU_SOLVER_STATS") != nullptr; // EXPERIMENT
+    auto phase = [&](const char* what)
+    {
+        if (phaseLog)
+            fprintf(stderr, "STAT phase %-12s at %8.3f s\n", what, Luau::TimeTrace::getClock());
+    };
+    phase("files");
+
     const char* jobsEnv = std::getenv("LUAU_LSP_JOBS");
     unsigned jobs = jobsEnv ? unsigned(std::strtoul(jobsEnv, nullptr, 10)) : 0;
     if (!annotate && jobs > 1)
@@ -409,6 +418,7 @@ int startAnalyze(const argparse::ArgumentParser& program)
             workspace.frontend.queueModuleCheck(workspace.fileResolver.getModuleName(Uri::file(path)));
         Luau::FrontendOptions options{/* retainFullTypeGraphs: */ false, /* forAutocomplete: */ false, /* runLintChecks: */ true};
         TaskScheduler scheduler(jobs);
+        phase("queued");
         workspace.frontend.checkQueuedModules(
             options,
             [&](std::vector<std::function<void()>> tasks)
@@ -417,11 +427,13 @@ int startAnalyze(const argparse::ArgumentParser& program)
                     scheduler.push(std::move(task));
             }
         );
+        phase("checked");
     }
 
     for (const auto& path : files)
         failed += !analyzeFile(workspace, path, format, annotate, reportedModules);
 
+    phase("reported");
     if (!client.diagnostics.empty())
     {
         failed += int(client.diagnostics.size());
@@ -430,6 +442,36 @@ int startAnalyze(const argparse::ArgumentParser& program)
             fprintf(stderr, "%s: %s\n", path.fsPath().c_str(), err.c_str());
     }
 
+    if (std::getenv("LUAU_SOLVER_STATS")) // EXPERIMENT
+    {
+        namespace st = Luau::stats;
+        static const char* timers[] = {"moduleCheck", "generate", "solve", "typeCheck2", "dispatch", "unblock",
+            "generalize", "subtyping", "normalize", "inhabited", "simplify", "reduceTypeFunctions", "overload",
+            "fc.pre", "fc.resolve", "fc.unify", "fc.inst2", "fc.queuer", "reduce.collect", "reduce.reducers"};
+        for (int k = 0; k < int(std::size(timers)); k++)
+            fprintf(stderr, "STAT time %-20s %8.3f s   in tc2 %8.3f s\n", timers[k],
+                double(st::values[k].load()) / 1e9, double(st::values[st::InTC2Base + k].load()) / 1e9);
+        for (int k = 0; k < 32; k++)
+            if (uint64_t n = st::values[st::CKind0 + k].load())
+                fprintf(stderr, "STAT kind %2d attempts %10llu ok %10llu time %8.3f s\n", k,
+                    (unsigned long long)n, (unsigned long long)st::values[st::CKindOk0 + k].load(),
+                    double(st::values[st::TDispatchKind0 + k].load()) / 1e9);
+        static const char* counters[] = {"passes", "forcePasses", "checks", "skips", "attempts", "successes",
+            "forcedAttempts", "forcedFails", "eraseShift", "pushes", "peakUnsolved"};
+        static const char* reduceCounters[] = {"reduce.calls", "reduce.cacheHit", "reduce.empty", "reduce.steps", "q.nodes", "q.persistent", "q.foreign", "ic.nodes", "ic.persistent", "ic.foreign", "sub.top", "sub.cov", "sub.cacheHit", "sub.envHit", "sub.identity", "sub.persistentPair", "amg.nodes", "amg.persistent", "amg.foreign", "amg.fnStop"};
+        for (int k = 0; k < int(std::size(reduceCounters)); k++)
+            fprintf(stderr, "STAT count %-16s %14llu\n", reduceCounters[k],
+                (unsigned long long)st::values[st::CReduceCalls + k].load());
+        for (auto& [name, v] : st::visits)
+            fprintf(stderr, "STAT visit %-28s inst %9llu nodes %11llu persistent %10llu frozen %11llu\n",
+                name.c_str(), (unsigned long long)v.instances, (unsigned long long)v.nodes,
+                (unsigned long long)v.persistent, (unsigned long long)v.frozen);
+        for (auto& [name, n] : st::named)
+            fprintf(stderr, "STAT tf %-24s calls %9llu time %8.3f s\n", name.c_str(),
+                (unsigned long long)n.calls, double(n.ns) / 1e9);
+        for (int k = 0; k < int(std::size(counters)); k++)
+            fprintf(stderr, "STAT count %-16s %14llu\n", counters[k], (unsigned long long)st::values[st::CPasses + k].load());
+    }
     if (format == ReportFormat::Luacheck)
         return 0;
     else
