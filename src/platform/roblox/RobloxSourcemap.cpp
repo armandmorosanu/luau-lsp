@@ -7,6 +7,9 @@
 #include "Luau/ConstraintSolver.h"
 #include "Luau/TimeTrace.h"
 #include "LuauFileUtils.hpp"
+#include <mutex>
+
+static std::recursive_mutex sourcemapTypesMutex;
 
 LUAU_FASTFLAG(LuauSolverV2)
 
@@ -243,12 +246,14 @@ static Luau::TypeId getSourcemapType(const Luau::GlobalTypes& globals, Luau::Typ
 {
     // Gets the type corresponding to the sourcemap node if it exists
     // Make sure to use the correct ty version (base typeChecker vs autocomplete typeChecker)
+    std::lock_guard sourcemapTypesLock(sourcemapTypesMutex);
     if (node->tys.find(&globals) != node->tys.end())
         return node->tys.at(&globals);
 
     Luau::LazyType ltv(
         [&globals, &arena, node](Luau::LazyType& ltv) -> void
         {
+            std::lock_guard sourcemapTypesLock(sourcemapTypesMutex);
             // Check if the LTV already has an unwrapped type
             if (ltv.unwrapped.load())
                 return;
