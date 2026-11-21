@@ -10,6 +10,7 @@ env:
 
 jobs:
   dist:
+    if: github.repository == 'JohnnyMorganz/luau-lsp'
     strategy:
       fail-fast: false
       matrix:
